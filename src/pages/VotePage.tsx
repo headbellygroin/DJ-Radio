@@ -3,33 +3,7 @@ import { useParams } from 'react-router-dom';
 import { Radio, Clock, CheckCircle, Music2, Send, AlertCircle, Mic2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import type { Station, VoteTally } from '../lib/types';
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function getHourKey() {
-  const now = new Date();
-  return [
-    now.getUTCFullYear(),
-    String(now.getUTCMonth() + 1).padStart(2, '0'),
-    String(now.getUTCDate()).padStart(2, '0'),
-    String(now.getUTCHours()).padStart(2, '0'),
-  ].join('-');
-}
-
-function msUntilNextHour() {
-  const now  = new Date();
-  const next = new Date(now);
-  next.setUTCHours(now.getUTCHours() + 1, 0, 0, 0);
-  return next.getTime() - now.getTime();
-}
-
-function formatCountdown(ms: number) {
-  if (ms <= 0) return '0:00';
-  const totalSec = Math.floor(ms / 1000);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
+import { getHourKey, msUntilNextHour, formatCountdown } from '../lib/time';
 
 function getVoterToken(): string {
   const key = 'radiodj_voter_token';

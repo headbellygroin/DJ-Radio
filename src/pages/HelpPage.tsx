@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Radio, Server, Monitor, Users, Settings, ChevronDown, ChevronRight,
-  Music2, HardDrive, Vote, Mic2, Clock, Shuffle, Repeat, LogIn,
-  Terminal, Globe, ArrowLeft, ExternalLink, AlertCircle, CheckCircle,
+  HardDrive, Vote, Mic2, Shuffle,
+  Terminal, ArrowLeft, AlertCircle, CheckCircle,
   Play, SkipForward, Volume2, Folder,
 } from 'lucide-react';
 

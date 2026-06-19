@@ -2,24 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { X, Copy, CheckCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import type { Station, VoteTally, PlaySource, PlayOrder, LoopMode } from '../lib/types';
-
-function formatCountdown(ms: number) {
-  if (ms <= 0) return '0:00';
-  const totalSec = Math.floor(ms / 1000);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-function getHourKey() {
-  const now = new Date();
-  return [
-    now.getUTCFullYear(),
-    String(now.getUTCMonth() + 1).padStart(2, '0'),
-    String(now.getUTCDate()).padStart(2, '0'),
-    String(now.getUTCHours()).padStart(2, '0'),
-  ].join('-');
-}
+import { getHourKey, formatCountdown } from '../lib/time';
 
 interface DJPanelProps {
   station:         Station | null;
