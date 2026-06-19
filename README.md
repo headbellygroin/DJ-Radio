@@ -1,12 +1,10 @@
-# RadioDJ — Personal Internet Radio Station
-
-A self-hosted internet radio station. You DJ from your own music library; your audience votes on what genre to play next.
+# RadioDJ — Personal Internet Radio Station Platform
 
 ---
 
 ## Table of Contents
 
-- [How it works](#how-it-works)
+- [Product vision](#product-vision)
 - [Architecture](#architecture)
 - [File structure](#file-structure)
 - [Database schema](#database-schema)
@@ -14,70 +12,124 @@ A self-hosted internet radio station. You DJ from your own music library; your a
 - [Running the app](#running-the-app)
 - [Audience voting](#audience-voting)
 - [Tech stack](#tech-stack)
-- [Known issues — coder's TODO list](#known-issues--coders-todo-list)
+- [Coder's guide — what to build next](#coders-guide--what-to-build-next)
 - [Key implementation notes](#key-implementation-notes)
 
 ---
 
-## How it works
+## Product vision
 
-Two things run on the DJ's machine:
+### Side 1 — The DJ (you, the station owner)
 
-1. **Local file server** (`server.mjs`, port 3001) — serves MP3/WAV/MP4 files from disk with range-request support and embedded album art extraction.
-2. **DJ interface** (React app, port 5173) — the control panel and media player; designed to be captured by OBS as a browser source for streaming.
+You have a large music library organised by genre. Too many tracks for YouTube / Spotify / Apple Music uploads, but perfect for a continuous radio stream. The goal is passive income by streaming to YouTube, Rumble, Kick, and other platforms simultaneously.
 
-The audience visits a public vote page at `/vote/<station-slug>` (hosted anywhere with internet access to Supabase). They pick a genre each hour. At the top of the hour the DJ player tallies votes, writes the winner to the database, and switches to that genre's folder after the current track ends.
+**How it works for the DJ:**
+- The player runs on your computer, captured by OBS as a browser source.
+- OBS streams the output to YouTube, Rumble, Kick, etc.
+- The player picks tracks randomly from whichever genre is active, mixing audio files and video files.
+- Set it and go — once you hit play the station runs itself.
 
-```
-[Music folders on disk]
-        │
-   server.mjs :3001
-        │  HTTP (localhost only)
-        ▼
-  PlayerPage (React)  ──── OBS browser source ──── Stream (YouTube/Twitch/Kick)
-        │  read/write
-        ▼
-     Supabase
-        │  realtime
-        ▼
-  VotePage (public URL — audience on any device)
-```
+**Voting system — your audience engagement layer:**
+- Audience votes on genre via a public URL (your vote page).
+- Voting modes to build engagement over time:
+  - **Free vote** — one free vote per hour; gets people participating.
+  - **Paid vote** — audience pays to have their vote count as more than a free vote (e.g. free = 1, $1 = 5, $5 = 25). Converts audience attention into direct revenue.
+  - **Vote by song** — vote for a specific song request.
+  - **Vote by hour** — choose which genre plays for the next full hour.
+  - **Vote by minutes** — choose how long a genre plays (60 / 120 / 180 min options are in the DB already; tally logic needs to be built).
+- The winning genre (weighted by paid votes) auto-switches at the top of the hour without you touching anything.
+
+### Side 2 — The SaaS platform (selling access to other DJs)
+
+Other streamers subscribe to use your platform for their own stations. They:
+- Run the file server (`server.mjs`) on their own computer against their own music library.
+- Log into your hosted app using their own account.
+- Get their own station, their own vote page, their own audience.
+- Keep 100% of what they earn from their streams.
+- You earn recurring subscription revenue.
+
+Each subscriber's files stay on their machine — your server never touches their music. The only shared infrastructure is Supabase (auth, votes, station config) and the hosted React app.
 
 ---
 
 ## Architecture
 
+### How the pieces connect
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   DJ's Computer                     │
+│                                                     │
+│  /Music/Master/         /Music/Genres/              │
+│       └──────────────────────┘                      │
+│                    │                                │
+│             server.mjs :3001                        │
+│           (HTTP, localhost only)                    │
+│                    │                                │
+│           React App :5173  ────────── OBS           │
+│           (PlayerPage)          (browser source)    │
+└────────────────────┼────────────────────────────────┘
+                     │ Supabase JS SDK
+                     ▼
+              ┌─────────────┐
+              │  Supabase   │◄── Stripe webhook
+              │  (Postgres  │    (updates subscriptions)
+              │   + Auth    │
+              │   + RT)     │
+              └──────┬──────┘
+                     │ Realtime
+                     ▼
+          ┌─────────────────────┐
+          │  Vote Page          │
+          │  /vote/:slug        │
+          │  (public — any      │
+          │   device/browser)   │
+          └─────────────────────┘
+                     │
+              Stream Viewers
+         (YouTube / Rumble / Kick)
+```
+
 ### Routes
 
-| Route | Auth required | Component | Purpose |
+| Route | Auth | Component | Purpose |
 |---|---|---|---|
-| `/` | Yes | `PlayerPage` | DJ control panel + media player |
-| `/login` | No | `LoginPage` | Email/password sign-in and sign-up |
-| `/vote/:slug` | No | `VotePage` | Public audience voting page |
-| `/vote` | No | `VotePage` | Same — picks first station if no slug |
-| `/help` | No | `HelpPage` | In-app user manual |
+| `/` | Required | `PlayerPage` | DJ control panel + media player |
+| `/login` | Public | `LoginPage` | Email/password sign-in and sign-up |
+| `/vote/:slug` | Public | `VotePage` | Public audience voting page |
+| `/vote` | Public | `VotePage` | Same — picks first station if no slug |
+| `/help` | Public | `HelpPage` | In-app user manual |
 | `*` | — | — | Redirects to `/` |
+
+### Streaming architecture (important)
+
+The React app does **not** stream video. OBS does. The flow is:
+
+1. `PlayerPage` runs at `http://localhost:5173` on the DJ's machine.
+2. OBS adds it as a Browser Source (full-screen, no scrollbars).
+3. OBS encodes and pushes to YouTube/Rumble/Kick via RTMP stream keys.
+4. Viewers watch the stream on those platforms — they don't visit `localhost:5173`.
+5. Viewers visit `http://your-domain/vote/your-slug` to vote — that's the only public URL.
+
+To stream to multiple platforms simultaneously: OBS supports multiple outputs natively (Settings → Stream → use a restream service), or via the `obs-multi-rtmp` plugin. No changes to this app are needed.
 
 ### Hourly vote cycle
 
 ```
 Audience submits vote
-  → INSERT into votes (station_id, vote_type='genre', value, voter_token, hour_key)
+  → INSERT into votes (station_id, vote_type='genre', value, weight, voter_token, hour_key)
 
-At top of hour (PlayerPage timer):
+At top of each UTC hour — PlayerPage timer fires:
   → SELECT votes WHERE station_id = ? AND hour_key = current_hour GROUP BY value
-  → Pick genre with most votes (tie-break: first alphabetically)
-  → INSERT into hourly_vote_result (hour_start, genre)
+  → Weighted tally: SUM(weight) per genre   ← weight column added, tally logic not yet updated
+  → Pick genre with highest weighted total
+  → INSERT into hourly_vote_result (station_id, hour_start, genre)
   → Set pendingGenre in React state
 
 On current track ending:
   → GET /tracks?genre=<winner> from server.mjs
-  → Load new queue, start playback
+  → Load new queue, start playback from winner genre folder
 ```
-
-### Vote deduplication
-
-Client-side only: a `voter_token` UUID is stored in `localStorage` and sent with every vote. One `(voter_token, station_id, hour_key)` combo is counted once on the client. **There is no database unique constraint** — the enforcement is purely in the browser.
 
 ---
 
@@ -85,52 +137,53 @@ Client-side only: a `voter_token` UUID is stored in `localStorage` and sent with
 
 ```
 /workspace
-├── index.html                   # App shell; title + OG meta still say "Bolt" — update
+├── index.html                   # App shell
 ├── server.mjs                   # Local file server (Node, no bundler)
 ├── package.json
-├── vite.config.ts               # No dev proxy to :3001; SERVER const is hardcoded
+├── vite.config.ts               # No dev proxy configured; VITE_FILE_SERVER_URL env var supported
 ├── tailwind.config.js
 ├── tsconfig.app.json
-├── .env                         # VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY (not in git)
+├── .env                         # VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_FILE_SERVER_URL
 │
 ├── supabase/
 │   └── migrations/
-│       ├── 20260513103324_create_hourly_vote_result.sql   # global winner mailbox
-│       └── 20260618164706_create_stations_and_votes.sql   # stations + votes tables
+│       ├── 20260513103324_create_hourly_vote_result.sql   # global winner mailbox (original)
+│       ├── 20260618164706_create_stations_and_votes.sql   # stations + votes tables
+│       └── 20260619000000_saas_foundation.sql             # station_id on results, weight, subscriptions
 │
 └── src/
     ├── main.tsx                 # React entry point
     ├── App.tsx                  # BrowserRouter, auth state, RequireAuth guard
     ├── index.css                # Tailwind directives only
-    ├── vite-env.d.ts
     │
     ├── lib/
-    │   ├── supabase.ts          # Supabase client (single export: `supabase`)
-    │   └── types.ts             # Shared TypeScript interfaces and union types
+    │   ├── supabase.ts          # Supabase client singleton
+    │   ├── types.ts             # Shared TypeScript interfaces
+    │   └── time.ts              # Shared UTC time utilities (getHourKey, msUntilNextHour, etc.)
     │
     ├── components/
-    │   └── DJPanel.tsx          # Slide-down panel (4 tabs: Override, Votes, Requests, Playback)
+    │   └── DJPanel.tsx          # Slide-down panel: Override, Votes, Requests, Playback tabs
     │
     └── pages/
-        ├── PlayerPage.tsx       # ~1030 lines — main DJ player; all playback + hourly tally logic
-        ├── VotePage.tsx         # ~472 lines — public genre voting + song requests + live tallies
-        ├── LoginPage.tsx        # Email/password auth via Supabase
-        └── HelpPage.tsx         # ~595 lines — in-app user manual (no Supabase calls)
+        ├── PlayerPage.tsx       # ~1000 lines — DJ player + hourly tally logic
+        ├── VotePage.tsx         # ~470 lines — public voting + song requests + live tallies
+        ├── LoginPage.tsx        # Email/password auth
+        └── HelpPage.tsx         # In-app user manual (no Supabase calls)
 ```
 
 ### What lives where
 
-- **All playback state** lives in `PlayerPage`. No custom hooks have been extracted yet — the component is large but self-contained.
-- **Vote submission + realtime** lives in `VotePage`. It also reads `hourly_vote_result` to show the currently-playing genre.
-- **Override controls, live tally display, playback settings** live in `DJPanel`; it receives callbacks and state from `PlayerPage` via props.
-- **Types** shared across pages live in `src/lib/types.ts`.
-- **Utility helpers** (`getHourKey`, `formatCountdown`, `msUntilNextHour`) are duplicated across `PlayerPage`, `DJPanel`, and `VotePage` — they have not been moved to a shared module yet.
+- **All playback state** is in `PlayerPage`. No custom hooks extracted yet.
+- **Vote submission + realtime** is in `VotePage`.
+- **Override controls, live tally, playback settings** are in `DJPanel` (receives callbacks from `PlayerPage` via props).
+- **UTC time utilities** (`getHourKey`, `msUntilNextHour`, `currentHourStart`, `formatCountdown`) are in `src/lib/time.ts` — import from there, do not redefine locally.
+- **File server URL** — read from `import.meta.env.VITE_FILE_SERVER_URL` with fallback `http://localhost:3001`. Set in `.env`.
 
 ---
 
 ## Database schema
 
-Run both migration files in `supabase/migrations/` in chronological order via the Supabase SQL editor.
+Run all migration files in `supabase/migrations/` in chronological (filename) order via the Supabase SQL editor.
 
 ### `stations`
 
@@ -140,10 +193,11 @@ Run both migration files in `supabase/migrations/` in chronological order via th
 | `owner_id` | uuid FK → auth.users | cascade delete |
 | `name` | text | display name |
 | `slug` | text UNIQUE | used in `/vote/:slug` URL |
-| `genres` | text[] | synced from `GET /genres` on the file server |
-| `playback_config` | jsonb | `{ order: 'random'|'sequential', loop: 'loop'|'once' }` |
+| `genres` | text[] | synced from `GET /genres` on the local file server |
+| `playback_config` | jsonb | `{ order: 'random'\|'sequential', loop: 'loop'\|'once' }` |
+| `file_server_url` | text | defaults `http://localhost:3001`; configurable per DJ |
 | `created_at` | timestamptz | |
-| `updated_at` | timestamptz | not auto-updated (no trigger) |
+| `updated_at` | timestamptz | not auto-updated (no trigger yet) |
 
 RLS: public SELECT; owner INSERT/UPDATE/DELETE.
 
@@ -155,9 +209,10 @@ RLS: public SELECT; owner INSERT/UPDATE/DELETE.
 | `station_id` | uuid FK → stations | cascade delete |
 | `vote_type` | text | `'genre'` or `'song'` |
 | `value` | text | genre name or song title |
-| `duration_minutes` | int | 60/120/180 — stored but **not yet used in tally logic** |
+| `duration_minutes` | int | 60/120/180 — stored, **tally logic not yet implemented** |
+| `weight` | int | DEFAULT 1 — free vote; paid votes set higher. **Tally not yet weighted** |
 | `voter_token` | text | UUID from audience browser `localStorage` |
-| `hour_key` | text | UTC bucket e.g. `"2026-06-19T14"` |
+| `hour_key` | text | UTC bucket e.g. `"2026-06-19-14"` |
 | `created_at` | timestamptz | |
 
 RLS: public SELECT and INSERT (intentionally open for unauthenticated audience).
@@ -167,11 +222,28 @@ RLS: public SELECT and INSERT (intentionally open for unauthenticated audience).
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | auto |
+| `station_id` | uuid nullable FK → stations | nullable for legacy rows; **always set going forward** |
 | `hour_start` | timestamptz | top-of-hour UTC timestamp |
 | `genre` | text nullable | winning genre; NULL = fall back to master folder |
 | `created_at` | timestamptz | |
 
-RLS: anon SELECT and INSERT. **No `station_id`** — currently a single global mailbox shared by all stations. Multi-station support requires adding this column and migrating queries.
+RLS: anon SELECT and INSERT.
+
+### `subscriptions`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | auto |
+| `user_id` | uuid UNIQUE FK → auth.users | one row per user |
+| `tier` | text | `'free'` / `'starter'` / `'pro'` / `'owner'` |
+| `status` | text | `'active'` / `'trialing'` / `'past_due'` / `'canceled'` |
+| `stripe_customer_id` | text | set by Stripe webhook |
+| `stripe_sub_id` | text | set by Stripe webhook |
+| `current_period_end` | timestamptz | used to show renewal date and enforce access |
+| `created_at` | timestamptz | |
+| `updated_at` | timestamptz | |
+
+RLS: users read their own row; only service role (Stripe webhook) writes.
 
 ---
 
@@ -180,9 +252,9 @@ RLS: anon SELECT and INSERT. **No `station_id`** — currently a single global m
 ### 1. Prerequisites
 
 - Node.js LTS
-- A [Supabase](https://supabase.com) project (free tier is fine)
+- A [Supabase](https://supabase.com) project (free tier works)
 
-### 2. Clone and install
+### 2. Install
 
 ```bash
 npm install
@@ -190,38 +262,45 @@ npm install
 
 ### 3. Environment variables
 
-Create a `.env` file in the project root (already in `.gitignore`):
+Create `.env` in the project root (already in `.gitignore`):
 
 ```
 VITE_SUPABASE_URL=https://xxxxxxxxxxxxxxxxxxxx.supabase.co
 VITE_SUPABASE_ANON_KEY=eyJ...
+VITE_FILE_SERVER_URL=http://localhost:3001
 ```
 
-Both values are in your Supabase project → Settings → API.
+Both Supabase values are in your project → Settings → API.
 
 ### 4. Run migrations
 
-Open the Supabase SQL editor and run each file in `supabase/migrations/` in chronological (filename) order.
+Open Supabase SQL editor, run each file in `supabase/migrations/` in chronological order.
 
-### 5. Organise your music folders
+### 5. Enable Realtime on the `votes` table
 
-**Master folder** — flat directory, all songs as fallback:
+Supabase → Database → Replication → toggle `votes` on. Without this the live vote tallies on the audience page won't update automatically.
+
+### 6. Organise your music folders
+
+**Master folder** — flat directory, all songs (fallback when no genre wins):
 ```
 /Music/Master/
   song1.mp3
   song2.wav
 ```
 
-**Genre folder** — one subfolder per genre (folder name = genre name that audiences vote on):
+**Genre folder** — one subfolder per genre (folder name = what audiences vote on):
 ```
 /Music/Genres/
   Rock/
     song.mp3
   Jazz/
-    song.mp3
+    song.wav
   Electronic/
-    song.mp3
+    track.mp4
 ```
+
+Genre names must exactly match what gets stored in `stations.genres` — the server reads folder names and the vote page reads `stations.genres`. They must be identical strings.
 
 ---
 
@@ -239,9 +318,9 @@ node server.mjs "/path/to/Master" "/path/to/Genres"
 npm run dev
 ```
 
-Open `http://localhost:5173`. Sign up/log in — a station row is auto-created in Supabase on first login.
+Open `http://localhost:5173`. Sign in — a station row is auto-created on first login.
 
-Other useful commands:
+Other commands:
 ```bash
 npm run build       # production build → dist/
 npm run typecheck   # tsc type-check without emit
@@ -253,15 +332,17 @@ npm run preview     # serve the production build locally
 
 ## Audience voting
 
-Share your vote URL with your audience:
-
+Share your vote URL:
 ```
 http://your-public-ip:5173/vote/your-station-slug
 ```
 
-The slug is auto-generated from your Supabase user ID on first login. You can find it in the Supabase `stations` table. There is currently no UI to edit it.
+Or once deployed:
+```
+https://your-domain.com/vote/your-station-slug
+```
 
-Votes are tallied at the top of every hour and the player switches to the winning genre after the current track finishes.
+The slug is auto-generated on first login from your user ID. There is currently no UI to edit it — change it directly in the Supabase `stations` table until a station management UI is built.
 
 ---
 
@@ -273,91 +354,158 @@ Votes are tallied at the top of every hour and the player switches to the winnin
 | Styling | Tailwind CSS, Lucide icons |
 | Routing | React Router v7 |
 | Backend / DB | Supabase (PostgreSQL, Auth, Realtime) |
-| File server | Node.js (`server.mjs`), `music-metadata` for album art |
+| File server | Node.js `server.mjs`, `music-metadata` for album art |
+| Payments (planned) | Stripe (subscriptions + vote purchases) |
 
 ---
 
-## Known issues — coder's TODO list
+## Coder's guide — what to build next
 
-These are confirmed bugs and missing features, roughly in priority order.
+### 🔴 Fix now — these are live bugs
 
-### 🔴 High priority
+**1. `hourly_vote_result` missing `station_id` in queries**
+The migration added the `station_id` column. Now update the code:
+- `PlayerPage.tsx` → `tallyAndSwitch()`: add `station_id: station.id` to the INSERT into `hourly_vote_result`.
+- `VotePage.tsx` → `fetchWinner()`: add `.eq('station_id', stationId)` to the SELECT from `hourly_vote_result`.
+- The fallback path in `tallyAndSwitch` (no station) can keep the unfiltered query as a legacy fallback.
 
-**1. `hourly_vote_result` has no `station_id`**
-The table is a single global mailbox. If two stations run simultaneously the wrong genre plays for both. Fix: add `station_id uuid REFERENCES stations(id)` column, update the INSERT in `PlayerPage.tsx` (`fetchAndTallyVotes`), update the SELECT in `VotePage.tsx` (`fetchWinner`), and write a migration.
+**2. Tally still uses count, not weight**
+The `weight` column exists in the DB. The tally in `PlayerPage.tsx` → `tallyAndSwitch()` still does:
+```ts
+tally[v.value] = (tally[v.value] || 0) + 1;
+```
+Change the SELECT to include `weight` and sum it:
+```ts
+tally[v.value] = (tally[v.value] || 0) + v.weight;
+```
 
-**2. Timezone mismatch in hourly scheduling (PlayerPage)**
-`getHourKey()` uses UTC (correct) but `msUntilNextHour()` and `currentHourStart()` in `PlayerPage.tsx` use **local time** (`new Date().setHours(...)`) instead of UTC (`setUTCHours`). VotePage uses UTC correctly. This causes the tally to fire at the wrong moment in non-UTC timezones. Fix: replace `setHours`/`getHours` with `setUTCHours`/`getUTCHours` in the PlayerPage helpers.
+**3. Silent errors on VotePage**
+Vote failures and song request failures are caught but not shown. The UI stays in a "submitted" state. Add an error state with a user-visible message.
 
-**3. `VotePage.fetchWinner()` ignores `station_id`**
-The query for the currently-playing genre in `VotePage.tsx` selects from `hourly_vote_result` without filtering by station. Until issue #1 is fixed this returns the global result regardless of which station's page you're on.
+---
 
-### 🟡 Medium priority
+### 🟡 Core features still to build
 
-**4. Vote deduplication is client-only**
-There is no `UNIQUE (voter_token, station_id, hour_key)` constraint in the database. Anyone can POST directly to Supabase and submit unlimited votes. Add the unique constraint in a migration (or at minimum a partial index), and add a DB-level check.
+**4. Paid voting — Stripe integration**
 
-**5. `duration_minutes` is stored but never used**
-Audience members pick 1/2/3 hour duration when voting, but the tally logic in `PlayerPage.tsx` ignores it — all votes count equally regardless. Decide intended behavior (weight by duration, or extend the active genre window) and implement it.
+The full paid voting flow:
+1. Audience selects a paid vote tier on `VotePage` (e.g. "5 votes for $1").
+2. Client calls a Supabase Edge Function (or your own API) to create a Stripe Checkout session.
+3. On successful payment, the Edge Function inserts the vote with `weight = N` into the `votes` table.
+4. The vote page shows the weighted tally in real time.
 
-**6. Silent errors on VotePage**
-Vote submit failures and song request failures do not show any feedback to the user. The error is caught but the UI stays in a "submitted" state. Add visible error messaging.
+Key decision: vote weight is set server-side after payment confirmation — never trust the client to set `weight`.
 
-**7. Utility helpers are duplicated in three files**
-`getHourKey`, `formatCountdown`, and `msUntilNextHour` appear in `PlayerPage.tsx`, `DJPanel.tsx`, and `VotePage.tsx`. Extract to `src/lib/time.ts`.
+**5. Duration-based genre switching**
 
-### 🟢 Low priority / polish
+`duration_minutes` is stored on each vote (60/120/180). The current tally ignores it — winning genre always plays for exactly one hour. To implement:
+- Weighted average or highest-voted duration determines how long the genre plays.
+- Schedule the next genre switch at `now + duration_minutes` instead of `msUntilNextHour()`.
+- This changes the scheduling logic in `PlayerPage.tsx` → `scheduleHourlyCheck`.
 
-**8. `SERVER` is hardcoded to `http://localhost:3001`**
-In `PlayerPage.tsx` line 19: `const SERVER = 'http://localhost:3001'`. This works for local dev only. For any deployment variation (custom port, remote machine) the user must edit source. Move to an env variable: `VITE_FILE_SERVER_URL`.
+**6. Station management UI**
 
-**9. `index.html` has stale Bolt.new meta**
-`<title>` says "Online Radio Music Automation". OG image and twitter card tags reference `bolt.new`. Update to match the RadioDJ brand.
+DJs need to be able to:
+- Set/edit their station name and slug (slug appears in audience vote URL — should be memorable).
+- See their `file_server_url` setting and update it if they run the file server on a non-default port.
+- Manage subscription / billing (link to Stripe customer portal).
 
-**10. Missing `public/` folder and `vite.svg`**
-`index.html` references `/vite.svg` as favicon which 404s. Add a real favicon or remove the reference.
+Suggested route: `/settings` (auth required).
 
-**11. `cors` npm package is unused**
-`package.json` lists `cors` as a dependency but `server.mjs` implements CORS manually. Remove it.
+**7. Subscription gate**
 
-**12. No station management UI**
-There is no screen to rename your station or edit its slug after creation. The slug is used in audience-facing URLs so DJs need a way to set a memorable one.
+Once Stripe is set up:
+- On login, fetch the user's row from `subscriptions`.
+- If `status !== 'active'` and `tier !== 'owner'`, block access to `PlayerPage` and redirect to a paywall/upgrade screen.
+- The `subscriptions` row is created by the Stripe webhook after purchase — do not let users create it themselves.
 
-**13. `stations.updated_at` has no auto-update trigger**
-The column exists but is never updated by Supabase automatically. Add a `moddatetime` trigger or update it manually in UPDATEs.
+**8. Stripe webhook handler**
 
-**14. No email confirmation / password reset in LoginPage**
-`LoginPage.tsx` handles sign-up but not email verification flow or password reset. These may not matter depending on Supabase project settings (email confirmation can be disabled).
+A Supabase Edge Function that:
+- Receives `customer.subscription.created`, `updated`, `deleted` events from Stripe.
+- Upserts into `subscriptions` with correct `tier`, `status`, `current_period_end`.
+- Uses the Stripe webhook secret to verify the request.
 
-**15. No Supabase Realtime replication setup note**
-For `VotePage` live tallies to work, Supabase replication must be enabled on the `votes` table (Database → Replication → toggle the table). This is not mentioned anywhere in setup docs.
+---
+
+### 🟢 Polish and quality of life
+
+**9. Auto-connect to file server on page load**
+Currently the DJ must click "Connect" after loading the page. For "set it and forget it", call `loadFromServer()` automatically when the page mounts (after station is loaded). Gate it on `checkServer()` succeeding so the UI degrades gracefully if the file server isn't running.
+
+**10. No DB unique constraint on votes**
+Client-side dedup via `localStorage` is easy to bypass. Add a partial unique index:
+```sql
+CREATE UNIQUE INDEX votes_one_free_per_token_per_hour
+  ON votes (voter_token, station_id, hour_key)
+  WHERE weight = 1;
+```
+Paid votes (weight > 1) can appear multiple times from the same token in the same hour — each paid transaction is a separate vote row.
+
+**11. `stations.updated_at` not auto-updating**
+Add a Supabase `moddatetime` trigger, or manually include `updated_at: new Date().toISOString()` in every station UPDATE call.
+
+**12. No password reset or email confirmation flow**
+`LoginPage` handles sign-up but not verification or password reset. Whether this matters depends on your Supabase project's email settings. If email confirmation is enabled, users who sign up land back on login with no feedback. Add `supabase.auth.resetPasswordForEmail()` and handle the `PASSWORD_RECOVERY` auth event.
+
+**13. Station slug editing**
+The slug is derived from the user's UUID on first login — not memorable. Let the DJ set a custom slug in the settings UI (unique constraint is already on the `stations.slug` column).
 
 ---
 
 ## Key implementation notes
 
-These are things that are easy to get wrong when touching the code.
+These are the non-obvious things that will burn time if you don't know them upfront.
 
-### `server.mjs` — how file IDs work
+### ⚠️ The HTTPS / mixed-content landmine (most important for SaaS)
 
-File IDs sent between the file server and the React app are `base64url`-encoded absolute paths. The server encodes them on `/tracks`, decodes them on `/file/:id` and `/cover/:id`. Never construct or store these IDs on the frontend — always get them from the server's response.
+The file server (`server.mjs`) runs over plain HTTP on the DJ's machine. If the React app is served from an HTTPS domain (which any public SaaS deployment will be), the browser will block all requests from the app to `http://localhost:3001` as "mixed content."
+
+**This means the hosted SaaS and the local file server cannot talk to each other from a browser on HTTPS.**
+
+Practical solutions (pick one before building the SaaS side):
+
+| Option | Tradeoff |
+|---|---|
+| **Run the DJ app locally** (`npm run dev`) — not hosted on HTTPS | Works perfectly. Each subscriber downloads and runs the app locally. Authentication still goes through Supabase. No mixed-content issue. The vote page is the only thing that needs to be publicly hosted. |
+| **Electron / Tauri wrapper** | Packages the whole app as a desktop app. No browser mixed-content restrictions. Bigger distribution effort. |
+| **Local HTTPS proxy** (e.g. Caddy, nginx with self-signed cert) | Subscriber runs a local reverse proxy that adds HTTPS to port 3001. Complex UX. |
+| **Cloudflare Tunnel or ngrok** | Subscriber exposes their local file server to a public HTTPS URL. Security/privacy concerns. |
+
+**Recommended path:** Keep the DJ interface as a locally-run app for now. Serve only the vote page publicly. This is the simplest path, sidesteps the browser security model completely, and still supports the full SaaS model (each subscriber logs in with their own account, their subscription is checked against Supabase, they keep their files local).
+
+### How file IDs work
+
+File IDs are `base64url`-encoded absolute paths on the DJ's machine. The server generates them in `/tracks` responses, decodes them in `/file/:id` and `/cover/:id`. Never construct or store these IDs outside of a server response — they are opaque tokens tied to the specific machine's filesystem.
 
 ### Auto station creation
 
-When `PlayerPage` mounts and a user is logged in, it calls `ensureStation()` which does an upsert on the `stations` table keyed by `owner_id`. If no station exists it creates one with a slug derived from the user's UUID. This runs once per mount — no dedicated "create station" flow.
+`PlayerPage` calls `ensureStation()` on mount (after auth). It upserts to the `stations` table keyed by `owner_id`. If no station exists, it creates one with a slug derived from the user's UUID. This runs once per page load — no separate "create station" UI.
 
 ### Genre list sync
 
-`PlayerPage` calls `GET /genres` on the file server to get the list of genre subfolder names, then writes that array to `stations.genres` in Supabase. The vote page reads `stations.genres` to populate the voting buttons. Genre names must exactly match subfolder names on disk.
+`PlayerPage` calls `GET /genres` to get subfolder names, then writes the array to `stations.genres`. The vote page reads `stations.genres` to populate genre buttons. **Genre names must exactly match subfolder names** — including capitalisation.
 
-### Supabase Realtime subscription (DJPanel + VotePage)
+### `file_server_url` in station settings
 
-Both `DJPanel` and `VotePage` subscribe to `INSERT` events on the `votes` table. The channel is cleaned up in `useEffect` return. If you add columns to `votes` make sure the subscription payload includes them (Supabase sends the full row by default unless you filter).
+`server.mjs` URL is now read from `import.meta.env.VITE_FILE_SERVER_URL` with fallback `http://localhost:3001`. For SaaS subscribers who run the file server on a different port, they can set `VITE_FILE_SERVER_URL` in their local `.env`. Eventually this should be settable per-station via the settings UI (it's a column on `stations` now).
 
-### OBS usage
+### Supabase Realtime subscriptions
 
-`PlayerPage` is designed to be loaded as an OBS browser source. The UI has a transparent/dark background and overlays intended to be visible on stream. Don't add opaque background wrappers that would break the OBS overlay appearance.
+Both `DJPanel` and `VotePage` subscribe to `INSERT` events on `votes`. The channel is cleaned up in `useEffect` return. Realtime must be enabled on the `votes` table in Supabase (Database → Replication) or live tallies won't update.
 
-### `playback_config` in Supabase
+### UTC everywhere
 
-Playback settings (random/sequential, loop/once) are persisted to `stations.playback_config` (a `jsonb` column) whenever the DJ changes them in `DJPanel`. They are loaded back on mount via `ensureStation`. The local React state always matches what is in the database.
+All time utilities are in `src/lib/time.ts`. They are all UTC. Do not use local-time methods (`getHours`, `setHours`, `setMinutes`) for anything related to the hourly vote cycle. Use `getUTCHours`, `setUTCHours`, `setUTCMinutes`.
+
+### OBS setup for the DJ
+
+1. OBS → Sources → Add → Browser Source
+2. URL: `http://localhost:5173`
+3. Width/Height: match your stream resolution (1920×1080 or 1280×720)
+4. Check "Shutdown source when not visible" (saves resources)
+5. The player UI has a dark/transparent aesthetic designed for this use case — don't wrap it in opaque containers.
+
+### Playback config persistence
+
+Play order (random/sequential) and loop mode (loop/once) are persisted to `stations.playback_config` (jsonb) whenever changed in `DJPanel`. They are restored from Supabase on page mount via `ensureStation`. The React state always mirrors the database.

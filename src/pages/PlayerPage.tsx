@@ -13,10 +13,11 @@ import type {
   Track, ImageAsset, Mode, PlaySource, VoteStatus,
   PlayOrder, LoopMode, Station, PlaybackConfig,
 } from '../lib/types';
+import { getHourKey, msUntilNextHour, currentHourStart, formatCountdown } from '../lib/time';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const SERVER = 'http://localhost:3001';
+const SERVER = import.meta.env.VITE_FILE_SERVER_URL ?? 'http://localhost:3001';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -26,14 +27,6 @@ function formatTime(s: number) {
   return `${m}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
 }
 
-function formatCountdown(ms: number) {
-  if (ms <= 0) return '0:00';
-  const totalSec = Math.floor(ms / 1000);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
 function shuffleArr<T>(arr: T[]): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -41,30 +34,6 @@ function shuffleArr<T>(arr: T[]): T[] {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
-}
-
-function msUntilNextHour(): number {
-  const now  = new Date();
-  const next = new Date(now);
-  next.setMinutes(0, 0, 0);
-  next.setHours(now.getHours() + 1);
-  return next.getTime() - now.getTime();
-}
-
-function currentHourStart(): Date {
-  const now = new Date();
-  now.setMinutes(0, 0, 0);
-  return now;
-}
-
-function getHourKey(): string {
-  const now = new Date();
-  return [
-    now.getUTCFullYear(),
-    String(now.getUTCMonth() + 1).padStart(2, '0'),
-    String(now.getUTCDate()).padStart(2, '0'),
-    String(now.getUTCHours()).padStart(2, '0'),
-  ].join('-');
 }
 
 function emailToSlug(email: string, uid: string): string {
