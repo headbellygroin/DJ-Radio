@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { Clock, CheckCircle, Music2, Mic2, Send } from 'lucide-react';
-import { localDb } from '../lib/localDb';
+import { supabase } from '../lib/supabase';
 import {
   getHourKey,
   formatCountdown,
@@ -70,18 +70,19 @@ export default function VotePage() {
       setLoading(true);
       setError(null);
 
-      let station: Station | null;
+      let query = supabase.from('stations').select('*');
       if (slug) {
-        station = localDb.stations.getBySlug(slug);
+        query = query.eq('slug', slug).limit(1);
       } else {
-        station = localDb.stations.getFirst();
+        query = query.order('created_at', { ascending: true }).limit(1);
       }
 
+      const { data, error: err } = await query.maybeSingle();
       if (cancelled) return;
-      if (!station) {
+      if (err || !data) {
         setError(slug ? `Station "${slug}" not found.` : 'No station found.');
       } else {
-        setStation(station);
+        setStation(data as Station);
       }
       setLoading(false);
     };

@@ -1,14 +1,15 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Radio, Mail, Lock, ArrowRight, AlertCircle } from 'lucide-react';
-import { supabase, type LocalUser } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
+import type { User } from '@supabase/supabase-js';
 
 import PageShell from '../components/ui/PageShell';
 import SegmentedControl from '../components/ui/SegmentedControl';
 import LoadingButton from '../components/ui/LoadingButton';
 
 interface LoginPageProps {
-  user: LocalUser | null | undefined;
+  user: User | null | undefined;
 }
 
 export default function LoginPage({ user }: LoginPageProps) {
@@ -19,6 +20,7 @@ export default function LoginPage({ user }: LoginPageProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState<string | null>(null);
 
+  // Already logged in — redirect away
   if (user) {
     navigate('/', { replace: true });
     return null;
@@ -45,6 +47,7 @@ export default function LoginPage({ user }: LoginPageProps) {
   return (
     <PageShell className="flex items-center justify-center p-6">
       <div className="w-full max-w-sm">
+        {/* Logo */}
         <div className="flex items-center gap-2.5 mb-10">
           <div className="w-9 h-9 rounded-full bg-red-600 flex items-center justify-center">
             <Radio size={16} />
@@ -52,6 +55,7 @@ export default function LoginPage({ user }: LoginPageProps) {
           <span className="font-semibold text-lg tracking-tight">RadioDJ</span>
         </div>
 
+        {/* Heading */}
         <h1 className="text-2xl font-bold mb-1">
           {tab === 'signin' ? 'Welcome back' : 'Create your station'}
         </h1>
@@ -61,6 +65,7 @@ export default function LoginPage({ user }: LoginPageProps) {
             : 'One account. Your music. Your audience.'}
         </p>
 
+        {/* Tab switcher */}
         <SegmentedControl
           options={[
             { value: 'signin', label: 'Sign in' },

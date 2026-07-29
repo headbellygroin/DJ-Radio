@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { supabase, type LocalUser } from '../lib/supabase';
+import type { User } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase';
 import { fetchCover } from '../lib/localServerClient';
 import { shuffleArr } from '../lib/playerUtils';
 import { useStation } from '../hooks/useStation';
@@ -16,7 +17,7 @@ import QueueSidebar from '../components/player/QueueSidebar';
 import PlayerNotifications from '../components/player/PlayerNotifications';
 
 interface PlayerPageProps {
-  user: LocalUser;
+  user: User;
 }
 
 export default function PlayerPage({ user }: PlayerPageProps) {
