@@ -3,7 +3,7 @@
  * and database fetch/submit functions.
  */
 import { supabase } from './supabase';
-import type { VoteTally } from './types';
+import type { VoteTally, Station } from './types';
 export function tallyVotes(
   rows: Array<{ value: string }>,
 ): VoteTally[] {
@@ -59,7 +59,7 @@ export async function submitGenreVote(
   durationMinutes: number,
   voterToken: string,
   hourKey: string,
-): Promise<{ recorded: boolean }> {
+): Promise<{ recorded: boolean; error: string | null }> {
   const { data, error } = await supabase.rpc('submit_vote', {
     p_station_id: stationId,
     p_vote_type: 'genre',
@@ -68,14 +68,17 @@ export async function submitGenreVote(
     p_voter_token: voterToken,
     p_hour_key: hourKey,
   });
-  return { recorded: !error && (data as boolean | null) === true };
+  return {
+    recorded: !error && (data as boolean | null) === true,
+    error: error ? error.message : null,
+  };
 }
 export async function submitSongRequest(
   stationId: string,
   song: string,
   voterToken: string,
   hourKey: string,
-): Promise<{ recorded: boolean }> {
+): Promise<{ recorded: boolean; error: string | null }> {
   const { data, error } = await supabase.rpc('submit_vote', {
     p_station_id: stationId,
     p_vote_type: 'song',
@@ -84,5 +87,25 @@ export async function submitSongRequest(
     p_voter_token: voterToken,
     p_hour_key: hourKey,
   });
-  return { recorded: !error && (data as boolean | null) === true };
+  return {
+    recorded: !error && (data as boolean | null) === true,
+    error: error ? error.message : null,
+  };
+}
+
+export async function fetchPublicStation(slug: string | null): Promise<Station | null> {
+  const { data, error } = await supabase.rpc('get_public_station', { p_slug: slug });
+  if (error || !data) return null;
+  const row = (data as Array<{ id: string; name: string; slug: string; genres: string[] }>)[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    owner_id: '',
+    name: row.name,
+    slug: row.slug,
+    genres: row.genres ?? [],
+    playback_config: { order: 'random', loop: 'loop' },
+    created_at: '',
+    updated_at: '',
+  };
 }

@@ -11,7 +11,7 @@ Internet radio automation for DJs. Play music from your local files, let your au
 - **Local media server** — serves audio, video, and image files from your machine (no uploads required)
 - **Drag-and-drop** — drop local files directly into the browser for quick testing
 - **OBS-ready** — designed to run as a 1280×720 Browser Source with "Monitor and Output" audio
-- **Realtime** — vote counts update live via Supabase Realtime subscriptions
+- **Realtime** — vote counts update live via polling of aggregated vote RPCs (Supabase Realtime is not used, because raw vote rows are not publicly readable)
 
 ## Stack
 
@@ -53,17 +53,14 @@ npm install
 
 1. Create a Supabase project and copy its URL and anon key into `.env`.
 2. Enable **Email Auth** in the Supabase Auth settings.
-3. Run the three migrations against your Supabase database. Migrations are located in `supabase/migrations/` and must be applied in chronological order:
+3. The database schema and security policies are already applied to the provisioned Supabase project. If you are setting up your own project, apply the migrations in `supabase/migrations/` in chronological order through the Supabase Dashboard SQL Editor or any Postgres client.
 
-   - `20260513103324_create_hourly_vote_result.sql` — creates the `hourly_vote_result` table for genre winners
-   - `20260618164706_create_stations_and_votes.sql` — creates `stations` and `votes` tables with RLS policies
-   - `20260717231138_add-station-id-to-hourly-vote-result.sql` — adds a `station_id` foreign key to `hourly_vote_result` and replaces the index with a station-scoped composite index
-
-   These can be applied through the Supabase Dashboard SQL Editor, the Supabase CLI (`supabase db push`), or any Postgres client.
-
-4. **Enable Realtime** for the `votes` table in your Supabase project:
-   - Go to **Database → Replication** in the Supabase Dashboard
-   - Ensure the `votes` table has Realtime enabled (needed for live vote tally updates on both the DJ panel and the audience voting page)
+   Key security notes for a self-managed project:
+   - **Votes are never directly inserted or read as raw rows by the frontend.** Vote submission goes through the `submit_vote` SECURITY DEFINER RPC, which validates the station, genre, voter token, and current UTC hour before inserting.
+   - **Aggregated vote data** (genre tallies and the current hourly winner) is exposed through `get_genre_tallies` and `get_current_winner` RPCs, callable by anyone.
+   - **Song requests** are only readable by the authenticated station owner via `get_song_requests`.
+   - **Stations and hourly results** are owner-scoped via RLS; the public only sees station name, slug, and genres through `get_public_station`.
+   - Do **not** enable Realtime on the `votes` table — raw per-voter rows are intentionally not exposed to any role.
 
 ### 3. Local media server
 
@@ -118,7 +115,7 @@ Open the Vite URL (default `http://localhost:5173`), sign up, and click **Connec
 
 ```
 ├── server.mjs                  # Local media server (Node.js, port 3001)
-├── supabase/migrations/        # 3 SQL migration files
+├── supabase/migrations/        # SQL migration files (already applied to the provisioned project)
 ├── src/
 │   ├── main.tsx                # Entry point
 │   ├── App.tsx                 # Router + auth gate
@@ -129,7 +126,7 @@ Open the Vite URL (default `http://localhost:5173`), sign up, and click **Connec
 │   ├── hooks/
 │   │   ├── usePlaybackController.ts  # Audio/video playback state machine
 │   │   ├── useVoteScheduler.ts       # Hourly tally, genre switching, countdown
-│   │   ├── useVoteSubscription.ts    # Realtime INSERT subscription on votes
+│   │   ├── useVoteSubscription.ts    # Polls aggregated vote RPCs every 10s (no Realtime)
 │   │   ├── useStation.ts             # Station CRUD and playback config
 │   │   └── useCountdown.ts           # Generic countdown timer
 │   ├── lib/
@@ -150,8 +147,8 @@ Open the Vite URL (default `http://localhost:5173`), sign up, and click **Connec
 - At each hour boundary, the DJ's station tallies the previous hour's genre votes, writes the winner to `hourly_vote_result`, and switches the play source if the winner differs from the current source.
 - Ties are broken alphabetically.
 - All vote operations are **scoped to a station** via `station_id`. Each station reads and writes its own data independently.
-- The audience page receives live vote tally updates through a Supabase Realtime subscription on the `votes` table (filtered by `station_id`).
-- A per-voter token stored in `localStorage` identifies unique voters (no authentication required for voting).
+- The audience page receives live vote tally updates by polling the `get_genre_tallies` and `get_current_winner` RPCs every 10 seconds (no Realtime subscription, because raw vote rows are not publicly readable).
+- A per-voter token stored in `localStorage` identifies unique voters (no authentication required for voting). One vote per voter per hour per vote type is enforced by a unique database index.
 
 ## Limitations
 

@@ -123,8 +123,13 @@ export function useVoteScheduler({
     const winner = tallies[0]?.genre ?? null;
     const genreWinner = winner && availableGenres.includes(winner) ? winner : null;
 
-    const { error: insertError } = await supabase.from('hourly_vote_result').insert({ hour_start: hourStart, genre: genreWinner, station_id: station.id });
-    if (insertError) console.warn('hourly_vote_result insert failed:', insertError.message);
+    const { error: insertError } = await supabase
+      .from('hourly_vote_result')
+      .upsert(
+        { hour_start: hourStart, genre: genreWinner, station_id: station.id },
+        { onConflict: 'station_id,hour_start' },
+      );
+    if (insertError) console.warn('hourly_vote_result upsert failed:', insertError.message);
 
     setLastVoteResult(genreWinner);
     setPendingGenre(genreWinner);

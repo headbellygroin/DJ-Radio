@@ -175,7 +175,7 @@ export function usePlaybackController(): PlaybackController {
     if (queue.length === 0) return;
     const next = currentIndex + 1;
     if (next >= queue.length) {
-      setIsPlaying(false);
+      playTrack(0);
     } else {
       playTrack(next);
     }

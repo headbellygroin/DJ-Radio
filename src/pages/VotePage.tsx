@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { Clock, CheckCircle, Music2, Mic2, Send } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { Clock, CheckCircle, Music2, Mic2, Send, AlertCircle } from 'lucide-react';
 import {
   getHourKey,
   formatCountdown,
@@ -14,6 +13,7 @@ import {
   fetchVoteTallies,
   submitGenreVote,
   submitSongRequest,
+  fetchPublicStation,
 } from '../lib/voteService';
 import { useCountdown } from '../hooks/useCountdown';
 import { useVoteSubscription } from '../hooks/useVoteSubscription';
@@ -46,10 +46,12 @@ export default function VotePage() {
   const [submitting, setSubmitting]     = useState(false);
   const [voted, setVoted]               = useState(false);
   const [myVote, setMyVote]             = useState<string | null>(null);
+  const [voteError, setVoteError]       = useState<string | null>(null);
 
   const [songRequest, setSongRequest]   = useState('');
   const [songSubmitting, setSongSubmitting] = useState(false);
   const [songSent, setSongSent]         = useState(false);
+  const [songError, setSongError]       = useState<string | null>(null);
 
   const [tab, setTab]                   = useState<'genre' | 'song'>('genre');
 
@@ -70,19 +72,12 @@ export default function VotePage() {
       setLoading(true);
       setError(null);
 
-      let query = supabase.from('stations').select('*');
-      if (slug) {
-        query = query.eq('slug', slug).limit(1);
-      } else {
-        query = query.order('created_at', { ascending: true }).limit(1);
-      }
-
-      const { data, error: err } = await query.maybeSingle();
+      const data = await fetchPublicStation(slug ?? null);
       if (cancelled) return;
-      if (err || !data) {
+      if (!data) {
         setError(slug ? `Station "${slug}" not found.` : 'No station found.');
       } else {
-        setStation(data as Station);
+        setStation(data);
       }
       setLoading(false);
     };
@@ -123,6 +118,7 @@ export default function VotePage() {
   const handleSubmitVote = async () => {
     if (!station || !selectedGenre || voted) return;
     setSubmitting(true);
+    setVoteError(null);
     const hk  = getHourKey();
     const tok = getVoterToken();
     const result = await submitGenreVote(station.id, selectedGenre, selectedDuration, tok, hk);
@@ -132,12 +128,15 @@ export default function VotePage() {
       setVoted(true);
       setMyVote(selectedGenre);
       refreshTallies();
+    } else {
+      setVoteError(result.error ?? 'Vote could not be recorded. Please try again.');
     }
   };
 
   const handleSubmitSong = async () => {
     if (!station || !songRequest.trim()) return;
     setSongSubmitting(true);
+    setSongError(null);
     const hk  = getHourKey();
     const tok = getVoterToken();
     const result = await submitSongRequest(station.id, songRequest.trim(), tok, hk);
@@ -146,6 +145,8 @@ export default function VotePage() {
       setSongSent(true);
       setSongRequest('');
       setTimeout(() => setSongSent(false), 4000);
+    } else {
+      setSongError(result.error ?? 'Request could not be sent. Please try again.');
     }
   };
 
@@ -301,6 +302,14 @@ export default function VotePage() {
                   </div>
                 )}
 
+                {/* Vote error */}
+                {voteError && (
+                  <div className="flex items-start gap-2 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2.5 mb-4 text-xs text-red-300">
+                    <AlertCircle size={13} className="flex-shrink-0 mt-0.5" />
+                    <span>{voteError}</span>
+                  </div>
+                )}
+
                 {/* Submit */}
                 {!voted && (
                   <LoadingButton
@@ -341,6 +350,13 @@ export default function VotePage() {
                 className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-3 text-sm text-white placeholder-white/25 focus:outline-none focus:border-red-500/50 transition-colors"
               />
             </div>
+
+            {songError && (
+              <div className="flex items-start gap-2 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2.5 mb-4 text-xs text-red-300">
+                <AlertCircle size={13} className="flex-shrink-0 mt-0.5" />
+                <span>{songError}</span>
+              </div>
+            )}
 
             <LoadingButton
               loading={songSubmitting}

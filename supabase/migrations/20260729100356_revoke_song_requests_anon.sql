@@ -1,0 +1,1 @@
+REVOKE EXECUTE ON FUNCTION public.get_song_requests(uuid, text) FROM anon;

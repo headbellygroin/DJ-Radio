@@ -39,7 +39,7 @@ export function useStation(user: User): UseStationResult {
         setLoopMode(s.playback_config?.loop ?? 'loop');
       } else {
         const slug = emailToSlug(user.email ?? 'station', user.id);
-        const { data: created } = await supabase
+        const { data: created, error } = await supabase
           .from('stations')
           .insert({
             owner_id: user.id,
@@ -51,7 +51,24 @@ export function useStation(user: User): UseStationResult {
           .select()
           .single();
 
-        if (!cancelled && created) setStation(created as Station);
+        if (cancelled) return;
+
+        if (created) {
+          setStation(created as Station);
+        } else if (error) {
+          // Another tab may have created the station concurrently; re-fetch.
+          const { data: existing2 } = await supabase
+            .from('stations')
+            .select('*')
+            .eq('owner_id', user.id)
+            .maybeSingle();
+          if (!cancelled && existing2) {
+            const s = existing2 as Station;
+            setStation(s);
+            setPlayOrder(s.playback_config?.order ?? 'random');
+            setLoopMode(s.playback_config?.loop ?? 'loop');
+          }
+        }
       }
 
       if (!cancelled) setStationLoading(false);
