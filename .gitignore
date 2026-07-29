@@ -64,3 +64,4 @@ Thumbs.db
 !.phpcs.xml.dist
 
 docs/plans
+.env
