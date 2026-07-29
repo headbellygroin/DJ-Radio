@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { User } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase';
+import { supabase, type LocalUser } from '../lib/supabase';
 import { emailToSlug } from '../lib/playerUtils';
 import type { Station, PlayOrder, LoopMode, PlaybackConfig } from '../lib/types';
 
@@ -13,7 +12,7 @@ interface UseStationResult {
   setLoopMode: (l: LoopMode) => void;
 }
 
-export function useStation(user: User): UseStationResult {
+export function useStation(user: LocalUser): UseStationResult {
   const [station, setStation] = useState<Station | null>(null);
   const [stationLoading, setStationLoading] = useState(true);
   const [playOrder, setPlayOrder] = useState<PlayOrder>('random');
