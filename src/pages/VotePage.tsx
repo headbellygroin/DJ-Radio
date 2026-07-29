@@ -1,51 +1,29 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { Radio, Clock, CheckCircle, Music2, Send, AlertCircle, Mic2 } from 'lucide-react';
+import { Clock, CheckCircle, Music2, Mic2, Send } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import {
+  getHourKey,
+  formatCountdown,
+  msUntilNextHour,
+} from '../lib/playerUtils';
+import {
+  getVoterToken,
+  getVotedKey,
+  fetchCurrentWinner,
+  fetchVoteTallies,
+  submitGenreVote,
+  submitSongRequest,
+} from '../lib/voteService';
+import { useCountdown } from '../hooks/useCountdown';
+import { useVoteSubscription } from '../hooks/useVoteSubscription';
 import type { Station, VoteTally } from '../lib/types';
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function getHourKey() {
-  const now = new Date();
-  return [
-    now.getUTCFullYear(),
-    String(now.getUTCMonth() + 1).padStart(2, '0'),
-    String(now.getUTCDate()).padStart(2, '0'),
-    String(now.getUTCHours()).padStart(2, '0'),
-  ].join('-');
-}
-
-function msUntilNextHour() {
-  const now  = new Date();
-  const next = new Date(now);
-  next.setUTCHours(now.getUTCHours() + 1, 0, 0, 0);
-  return next.getTime() - now.getTime();
-}
-
-function formatCountdown(ms: number) {
-  if (ms <= 0) return '0:00';
-  const totalSec = Math.floor(ms / 1000);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-function getVoterToken(): string {
-  const key = 'radiodj_voter_token';
-  let token = localStorage.getItem(key);
-  if (!token) {
-    token = crypto.randomUUID();
-    localStorage.setItem(key, token);
-  }
-  return token;
-}
-
-function getVotedKey(stationId: string, hourKey: string) {
-  return `radiodj_voted_${stationId}_${hourKey}`;
-}
-
-// ─── Duration options ────────────────────────────────────────────────────────
+import PageShell from '../components/ui/PageShell';
+import Spinner from '../components/ui/Spinner';
+import SegmentedControl from '../components/ui/SegmentedControl';
+import LoadingButton from '../components/ui/LoadingButton';
+import Brand from '../components/ui/Brand';
 
 const DURATIONS = [
   { label: '1 hour',  value: 60  },
@@ -53,10 +31,8 @@ const DURATIONS = [
   { label: '3 hours', value: 180 },
 ];
 
-// ─── Component ───────────────────────────────────────────────────────────────
-
 export default function VotePage() {
-  const { slug }  = useParams<{ slug?: string }>();
+  const { slug } = useParams<{ slug?: string }>();
 
   const [station, setStation]           = useState<Station | null>(null);
   const [loading, setLoading]           = useState(true);
@@ -65,7 +41,7 @@ export default function VotePage() {
   const [voteTallies, setVoteTallies]   = useState<VoteTally[]>([]);
   const [currentWinner, setCurrentWinner] = useState<string | null>(null);
 
-  const [selectedGenre, setSelectedGenre]   = useState<string | null>(null);
+  const [selectedGenre, setSelectedGenre]     = useState<string | null>(null);
   const [selectedDuration, setSelectedDuration] = useState(60);
   const [submitting, setSubmitting]     = useState(false);
   const [voted, setVoted]               = useState(false);
@@ -75,11 +51,21 @@ export default function VotePage() {
   const [songSubmitting, setSongSubmitting] = useState(false);
   const [songSent, setSongSent]         = useState(false);
 
-  const [countdownMs, setCountdownMs]   = useState(msUntilNextHour());
   const [tab, setTab]                   = useState<'genre' | 'song'>('genre');
 
-  // ── Load station ────────────────────────────────────────────────────────
+  const countdownMs    = useCountdown(msUntilNextHour);
+  const hourKey        = getHourKey();
+  const prevHourKeyRef = useRef(hourKey);
+
+  const refreshTallies = useCallback(async () => {
+    if (!station) return;
+    setVoteTallies(await fetchVoteTallies(station.id, getHourKey()));
+  }, [station]);
+
+  useVoteSubscription(station?.id, refreshTallies);
+
   useEffect(() => {
+    let cancelled = false;
     const load = async () => {
       setLoading(true);
       setError(null);
@@ -92,6 +78,7 @@ export default function VotePage() {
       }
 
       const { data, error: err } = await query.maybeSingle();
+      if (cancelled) return;
       if (err || !data) {
         setError(slug ? `Station "${slug}" not found.` : 'No station found.');
       } else {
@@ -100,169 +87,94 @@ export default function VotePage() {
       setLoading(false);
     };
     load();
+    return () => { cancelled = true; };
   }, [slug]);
 
-  // ── Check if already voted this hour ────────────────────────────────────
   useEffect(() => {
     if (!station) return;
-    const hourKey  = getHourKey();
-    const storedVote = localStorage.getItem(getVotedKey(station.id, hourKey));
-    if (storedVote) {
+    fetchCurrentWinner(station.id).then(setCurrentWinner);
+    refreshTallies();
+  }, [station, refreshTallies]);
+
+  useEffect(() => {
+    if (!station) return;
+    const stored = localStorage.getItem(getVotedKey(station.id, hourKey));
+    if (stored) {
       setVoted(true);
-      setMyVote(storedVote);
+      setMyVote(stored);
+    } else {
+      setVoted(false);
+      setMyVote(null);
     }
-  }, [station]);
-
-  // ── Fetch current winner ─────────────────────────────────────────────────
-  const fetchWinner = useCallback(async () => {
-    const hourStart = new Date();
-    hourStart.setUTCMinutes(0, 0, 0);
-    const { data } = await supabase
-      .from('hourly_vote_result')
-      .select('genre')
-      .lte('hour_start', hourStart.toISOString())
-      .order('hour_start', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    setCurrentWinner(data?.genre ?? null);
-  }, []);
-
-  // ── Fetch vote tallies ───────────────────────────────────────────────────
-  const fetchTallies = useCallback(async () => {
-    if (!station) return;
-    const hourKey = getHourKey();
-    const { data } = await supabase
-      .from('votes')
-      .select('value')
-      .eq('station_id', station.id)
-      .eq('vote_type', 'genre')
-      .eq('hour_key', hourKey);
-
-    if (!data) return;
-
-    const genreMap: Record<string, number> = {};
-    for (const v of data) {
-      genreMap[v.value] = (genreMap[v.value] || 0) + 1;
-    }
-    setVoteTallies(
-      Object.entries(genreMap)
-        .map(([genre, count]) => ({ genre, count }))
-        .sort((a, b) => b.count - a.count),
-    );
-  }, [station]);
+    setSelectedGenre(null);
+  }, [station?.id, hourKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    fetchWinner();
-    fetchTallies();
     if (!station) return;
+    if (hourKey !== prevHourKeyRef.current) {
+      prevHourKeyRef.current = hourKey;
+      setVoted(false);
+      setMyVote(null);
+      setSelectedGenre(null);
+      fetchCurrentWinner(station.id).then(setCurrentWinner);
+    }
+  }, [hourKey, station]);
 
-    const channel = supabase
-      .channel(`vote-page-${station.id}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT', schema: 'public', table: 'votes',
-          filter: `station_id=eq.${station.id}`,
-        },
-        fetchTallies,
-      )
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
-  }, [station, fetchWinner, fetchTallies]);
-
-  // ── Countdown ticker ────────────────────────────────────────────────────
-  useEffect(() => {
-    const id = setInterval(() => setCountdownMs(msUntilNextHour()), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  // ── Submit genre vote ───────────────────────────────────────────────────
-  const submitVote = async () => {
+  const handleSubmitVote = async () => {
     if (!station || !selectedGenre || voted) return;
     setSubmitting(true);
-
-    const hourKey    = getHourKey();
-    const voterToken = getVoterToken();
-
-    const { error: err } = await supabase.from('votes').insert({
-      station_id:       station.id,
-      vote_type:        'genre',
-      value:            selectedGenre,
-      duration_minutes: selectedDuration,
-      voter_token:      voterToken,
-      hour_key:         hourKey,
-    });
-
+    const hk  = getHourKey();
+    const tok = getVoterToken();
+    const result = await submitGenreVote(station.id, selectedGenre, selectedDuration, tok, hk);
     setSubmitting(false);
-    if (!err) {
-      localStorage.setItem(getVotedKey(station.id, hourKey), selectedGenre);
+    if (result.recorded) {
+      localStorage.setItem(getVotedKey(station.id, hk), selectedGenre);
       setVoted(true);
       setMyVote(selectedGenre);
-      fetchTallies();
+      refreshTallies();
     }
   };
 
-  // ── Submit song request ─────────────────────────────────────────────────
-  const submitSongRequest = async () => {
+  const handleSubmitSong = async () => {
     if (!station || !songRequest.trim()) return;
     setSongSubmitting(true);
-
-    const hourKey    = getHourKey();
-    const voterToken = getVoterToken();
-
-    await supabase.from('votes').insert({
-      station_id:  station.id,
-      vote_type:   'song',
-      value:       songRequest.trim(),
-      voter_token: voterToken,
-      hour_key:    hourKey,
-    });
-
+    const hk  = getHourKey();
+    const tok = getVoterToken();
+    const result = await submitSongRequest(station.id, songRequest.trim(), tok, hk);
     setSongSubmitting(false);
-    setSongSent(true);
-    setSongRequest('');
-    setTimeout(() => setSongSent(false), 4000);
+    if (result.recorded) {
+      setSongSent(true);
+      setSongRequest('');
+      setTimeout(() => setSongSent(false), 4000);
+    }
   };
 
   const totalVotes = voteTallies.reduce((s, v) => s + v.count, 0);
+  const winnerName = currentWinner ?? 'Master';
 
-  // ── Loading / error states ───────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#080a0e] text-white flex items-center justify-center" style={{ fontFamily: 'Inter, sans-serif' }}>
-        <div className="w-5 h-5 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" />
-      </div>
+      <PageShell className="flex items-center justify-center">
+        <Spinner />
+      </PageShell>
     );
   }
 
   if (error || !station) {
     return (
-      <div className="min-h-screen bg-[#080a0e] text-white flex items-center justify-center p-6" style={{ fontFamily: 'Inter, sans-serif' }}>
+      <PageShell className="flex items-center justify-center p-6">
         <div className="text-center">
-          <AlertCircle size={32} className="text-white/20 mx-auto mb-3" />
           <p className="text-white/50">{error ?? 'Station not found.'}</p>
         </div>
-      </div>
+      </PageShell>
     );
   }
 
   return (
-    <div
-      className="min-h-screen bg-[#080a0e] text-white flex flex-col"
-      style={{ fontFamily: 'Inter, sans-serif' }}
-    >
+    <PageShell className="flex flex-col">
       {/* Header */}
       <header className="border-b border-white/5 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-full bg-red-600 flex items-center justify-center">
-            <Radio size={14} />
-          </div>
-          <div>
-            <p className="font-semibold text-sm leading-none">{station.name}</p>
-            <p className="text-[10px] text-white/30 mt-0.5">RadioDJ</p>
-          </div>
-        </div>
+        <Brand subtitle={station.name} />
 
         <div className="flex items-center gap-2 text-xs text-white/30">
           <Clock size={12} />
@@ -273,16 +185,14 @@ export default function VotePage() {
       </header>
 
       <div className="flex-1 px-6 py-8 max-w-lg mx-auto w-full">
-        {/* Current genre playing */}
-        {currentWinner && (
-          <div className="mb-6 flex items-center gap-3 px-4 py-3 bg-white/[0.03] border border-white/5 rounded-xl">
-            <Music2 size={14} className="text-white/30 flex-shrink-0" />
-            <div className="min-w-0">
-              <p className="text-[10px] text-white/30">Currently playing</p>
-              <p className="text-sm font-medium truncate">{currentWinner}</p>
-            </div>
+        {/* Current genre playing (always visible; shows Master as default) */}
+        <div className="mb-6 flex items-center gap-3 px-4 py-3 bg-white/[0.03] border border-white/5 rounded-xl">
+          <Music2 size={14} className="text-white/30 flex-shrink-0" />
+          <div className="min-w-0">
+            <p className="text-[10px] text-white/30">Currently playing</p>
+            <p className="text-sm font-medium truncate">{winnerName}</p>
           </div>
-        )}
+        </div>
 
         {/* Heading */}
         <h1 className="text-xl font-bold mb-1">Vote for the next hour</h1>
@@ -292,23 +202,17 @@ export default function VotePage() {
         </p>
 
         {/* Tab switcher */}
-        <div className="flex gap-1 p-1 bg-white/5 rounded-xl mb-6">
-          {(['genre', 'song'] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${
-                tab === t ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70'
-              }`}
-            >
-              {t === 'genre' ? 'Vote by genre' : 'Request a song'}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          options={[
+            { value: 'genre', label: 'Vote by genre' },
+            { value: 'song',  label: 'Request a song' },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
 
-        {/* ── GENRE VOTE ─────────────────────────────────────────────────── */}
         {tab === 'genre' && (
-          <div>
+          <div className="mt-6">
             {station.genres.length === 0 ? (
               <div className="text-center py-10 text-white/25">
                 <Music2 size={32} className="mx-auto mb-3 opacity-50" />
@@ -350,7 +254,6 @@ export default function VotePage() {
                             : 'border-white/5 bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.04]'
                         } ${voted ? 'cursor-default' : 'cursor-pointer'}`}
                       >
-                        {/* Vote bar background */}
                         <div
                           className={`absolute inset-0 rounded-xl transition-all duration-700 ${
                             isTop ? 'bg-white/[0.04]' : 'bg-transparent'
@@ -377,7 +280,6 @@ export default function VotePage() {
                   })}
                 </div>
 
-                {/* Duration picker */}
                 {!voted && selectedGenre && (
                   <div className="mb-5">
                     <p className="text-[11px] text-white/40 mb-2">How long should it play?</p>
@@ -401,26 +303,21 @@ export default function VotePage() {
 
                 {/* Submit */}
                 {!voted && (
-                  <button
-                    onClick={submitVote}
-                    disabled={!selectedGenre || submitting}
-                    className="w-full py-3 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2"
+                  <LoadingButton
+                    loading={submitting}
+                    disabled={!selectedGenre}
+                    onClick={handleSubmitVote}
                   >
-                    {submitting ? (
-                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    ) : (
-                      <>{selectedGenre ? `Vote for ${selectedGenre}` : 'Select a genre'}</>
-                    )}
-                  </button>
+                    {selectedGenre ? `Vote for ${selectedGenre}` : 'Select a genre'}
+                  </LoadingButton>
                 )}
               </>
             )}
           </div>
         )}
 
-        {/* ── SONG REQUEST ───────────────────────────────────────────────── */}
         {tab === 'song' && (
-          <div>
+          <div className="mt-6">
             <p className="text-sm text-white/40 mb-4">
               The DJ can see all requests in the control panel. No guarantees — but we listen!
             </p>
@@ -438,27 +335,21 @@ export default function VotePage() {
                 type="text"
                 value={songRequest}
                 onChange={(e) => setSongRequest(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && submitSongRequest()}
+                onKeyDown={(e) => e.key === 'Enter' && handleSubmitSong()}
                 placeholder="Artist — Song name"
                 maxLength={120}
                 className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-3 text-sm text-white placeholder-white/25 focus:outline-none focus:border-red-500/50 transition-colors"
               />
             </div>
 
-            <button
-              onClick={submitSongRequest}
-              disabled={!songRequest.trim() || songSubmitting}
-              className="w-full py-3 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2"
+            <LoadingButton
+              loading={songSubmitting}
+              disabled={!songRequest.trim()}
+              onClick={handleSubmitSong}
             >
-              {songSubmitting ? (
-                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              ) : (
-                <>
-                  <Send size={13} />
-                  Send request
-                </>
-              )}
-            </button>
+              <Send size={13} />
+              Send request
+            </LoadingButton>
           </div>
         )}
       </div>
@@ -467,6 +358,6 @@ export default function VotePage() {
       <div className="border-t border-white/5 px-6 py-3 text-[11px] text-white/20 text-center">
         Powered by RadioDJ &middot; Votes reset each hour
       </div>
-    </div>
+    </PageShell>
   );
 }

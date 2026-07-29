@@ -1,25 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { X, Copy, CheckCircle } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { formatCountdown, getHourKey } from '../lib/playerUtils';
+import { fetchVoteTallies, fetchSongRequests } from '../lib/voteService';
 import type { Station, VoteTally, PlaySource, PlayOrder, LoopMode } from '../lib/types';
-
-function formatCountdown(ms: number) {
-  if (ms <= 0) return '0:00';
-  const totalSec = Math.floor(ms / 1000);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-function getHourKey() {
-  const now = new Date();
-  return [
-    now.getUTCFullYear(),
-    String(now.getUTCMonth() + 1).padStart(2, '0'),
-    String(now.getUTCDate()).padStart(2, '0'),
-    String(now.getUTCHours()).padStart(2, '0'),
-  ].join('-');
-}
 
 interface DJPanelProps {
   station:         Station | null;
@@ -47,60 +30,34 @@ export default function DJPanel({
   playOrder, loopMode, onPlayOrder, onLoopMode,
   djForceGenre, djSwitchNow, onClose,
 }: DJPanelProps) {
-  const [tab, setTab]               = useState<Tab>('override');
+  const [tab, setTab]                 = useState<Tab>('override');
   const [voteTallies, setVoteTallies] = useState<VoteTally[]>([]);
-  const [songRequests, setSongRequests] = useState<string[]>([]);
-  const [copied, setCopied]         = useState(false);
+  const [songReqs, setSongReqs]       = useState<string[]>([]);
+  const [copied, setCopied]           = useState(false);
 
-  const hourKey     = getHourKey();
   const sourceLabel = playSource === 'master' ? 'Master' : playSource;
 
+  // hourKey is derived fresh inside fetchVotes so it always reflects the
+  // current UTC hour — no stale-closure problem.
   const fetchVotes = useCallback(async () => {
     if (!station) return;
-    const { data } = await supabase
-      .from('votes')
-      .select('vote_type, value')
-      .eq('station_id', station.id)
-      .eq('hour_key', hourKey);
+    const hk = getHourKey();
 
-    if (!data) return;
+    const [tallies, reqs] = await Promise.all([
+      fetchVoteTallies(station.id, hk),
+      fetchSongRequests(station.id, hk),
+    ]);
 
-    const genreMap: Record<string, number> = {};
-    const songs: string[] = [];
-
-    for (const v of data) {
-      if (v.vote_type === 'genre') {
-        genreMap[v.value] = (genreMap[v.value] || 0) + 1;
-      } else {
-        songs.push(v.value);
-      }
-    }
-
-    setVoteTallies(
-      Object.entries(genreMap)
-        .map(([genre, count]) => ({ genre, count }))
-        .sort((a, b) => b.count - a.count)
-    );
-    setSongRequests([...new Set(songs)].slice(0, 30));
-  }, [station, hourKey]);
+    setVoteTallies(tallies);
+    setSongReqs(reqs);
+  }, [station]);
 
   useEffect(() => {
     fetchVotes();
     if (!station) return;
 
-    const channel = supabase
-      .channel(`dj-votes-${station.id}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT', schema: 'public', table: 'votes',
-          filter: `station_id=eq.${station.id}`,
-        },
-        fetchVotes,
-      )
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
+    const interval = setInterval(fetchVotes, 5000);
+    return () => clearInterval(interval);
   }, [station, fetchVotes]);
 
   const copyUrl = () => {
@@ -114,7 +71,7 @@ export default function DJPanel({
   const tabs: { id: Tab; label: string }[] = [
     { id: 'override',  label: 'Override'                          },
     { id: 'votes',     label: `Votes (${totalGenreVotes})`        },
-    { id: 'requests',  label: `Requests (${songRequests.length})` },
+    { id: 'requests',  label: `Requests (${songReqs.length})`     },
     { id: 'playback',  label: 'Playback'                          },
   ];
 
@@ -143,7 +100,6 @@ export default function DJPanel({
           </button>
         </div>
 
-        {/* ── OVERRIDE TAB ─────────────────────────────────────────────────── */}
         {tab === 'override' && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Status info */}
@@ -235,7 +191,6 @@ export default function DJPanel({
           </div>
         )}
 
-        {/* ── VOTES TAB ────────────────────────────────────────────────────── */}
         {tab === 'votes' && (
           <div>
             {voteTallies.length === 0 ? (
@@ -267,14 +222,13 @@ export default function DJPanel({
           </div>
         )}
 
-        {/* ── REQUESTS TAB ─────────────────────────────────────────────────── */}
         {tab === 'requests' && (
           <div>
-            {songRequests.length === 0 ? (
+            {songReqs.length === 0 ? (
               <p className="text-white/25 text-sm text-center py-6">No song requests yet</p>
             ) : (
               <ul className="space-y-1.5 max-h-40 overflow-y-auto">
-                {songRequests.map((req, i) => (
+                {songReqs.map((req, i) => (
                   <li key={i} className="text-xs text-white/50 px-3 py-2 bg-white/[0.03] rounded-lg">
                     {req}
                   </li>
@@ -284,7 +238,6 @@ export default function DJPanel({
           </div>
         )}
 
-        {/* ── PLAYBACK TAB ─────────────────────────────────────────────────── */}
         {tab === 'playback' && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             <div>

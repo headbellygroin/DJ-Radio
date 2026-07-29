@@ -18,6 +18,7 @@ import { parseFile } from 'music-metadata';
 const PORT = 3001;
 const MASTER_FOLDER = process.argv[2] ? path.resolve(process.argv[2]) : null;
 const GENRE_FOLDER  = process.argv[3] ? path.resolve(process.argv[3]) : null;
+const ALLOWED_ORIGIN = process.env.WEB_APP_ORIGIN ?? 'http://localhost:5173';
 
 const AUDIO_EXTS = new Set(['.mp3', '.wav']);
 const VIDEO_EXTS = new Set(['.mp4']);
@@ -35,10 +36,21 @@ const MIME = {
 };
 
 function cors(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+  res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
+}
+
+// Containment check: a path is safe to serve only if it is a strict descendant
+// of MASTER_FOLDER or GENRE_FOLDER. Rejects the folder root itself (no directory
+// listing) and any path outside the configured roots.
+function isPathInside(child) {
+  const resolved = path.resolve(child);
+  return [MASTER_FOLDER, GENRE_FOLDER]
+    .filter(Boolean)
+    .some((parent) => resolved.startsWith(path.resolve(parent) + path.sep));
 }
 
 function json(res, data, status = 200) {
@@ -186,7 +198,14 @@ const server = http.createServer(async (req, res) => {
 
     let targetFolder;
     if (genre && genre !== 'master' && GENRE_FOLDER) {
+      if (genre.includes('..') || genre.includes('/') || genre.includes('\\')) {
+        return json(res, { error: 'Invalid genre' }, 400);
+      }
       targetFolder = path.join(GENRE_FOLDER, genre);
+      if (!isPathInside(targetFolder)) {
+        console.warn(`(rejected) ${req.method} ${pathname} → ${targetFolder}`);
+        return json(res, { error: 'Folder not found' }, 404);
+      }
     } else {
       targetFolder = MASTER_FOLDER;
     }
@@ -204,6 +223,10 @@ const server = http.createServer(async (req, res) => {
   const coverMatch = pathname.match(/^\/cover\/(.+)$/);
   if (coverMatch) {
     const filePath = decodeId(coverMatch[1]);
+    if (!isPathInside(filePath)) {
+      console.warn(`(rejected) ${req.method} ${pathname} → ${filePath}`);
+      return json(res, { cover: null });
+    }
     if (!fs.existsSync(filePath)) return json(res, { cover: null });
     const cover = await getCover(filePath);
     return json(res, { cover });
@@ -213,6 +236,10 @@ const server = http.createServer(async (req, res) => {
   const fileMatch = pathname.match(/^\/file\/(.+)$/);
   if (fileMatch) {
     const filePath = decodeId(fileMatch[1]);
+    if (!isPathInside(filePath)) {
+      console.warn(`(rejected) ${req.method} ${pathname} → ${filePath}`);
+      cors(res); res.writeHead(404); res.end('Not found'); return;
+    }
     if (!fs.existsSync(filePath)) {
       cors(res); res.writeHead(404); res.end('Not found'); return;
     }
@@ -224,6 +251,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`\n RadioDJ Local Server running at http://localhost:${PORT}`);
+  console.log(` Allowed origin: ${ALLOWED_ORIGIN}`);
   if (MASTER_FOLDER) {
     console.log(` Master folder : ${MASTER_FOLDER}`);
   } else {

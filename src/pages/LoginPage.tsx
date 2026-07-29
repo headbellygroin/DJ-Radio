@@ -4,6 +4,10 @@ import { Radio, Mail, Lock, ArrowRight, AlertCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import type { User } from '@supabase/supabase-js';
 
+import PageShell from '../components/ui/PageShell';
+import SegmentedControl from '../components/ui/SegmentedControl';
+import LoadingButton from '../components/ui/LoadingButton';
+
 interface LoginPageProps {
   user: User | null | undefined;
 }
@@ -41,10 +45,7 @@ export default function LoginPage({ user }: LoginPageProps) {
   };
 
   return (
-    <div
-      className="min-h-screen bg-[#080a0e] text-white flex items-center justify-center p-6"
-      style={{ fontFamily: 'Inter, sans-serif' }}
-    >
+    <PageShell className="flex items-center justify-center p-6">
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="flex items-center gap-2.5 mb-10">
@@ -65,21 +66,16 @@ export default function LoginPage({ user }: LoginPageProps) {
         </p>
 
         {/* Tab switcher */}
-        <div className="flex gap-1 p-1 bg-white/5 rounded-xl mb-6">
-          {(['signin', 'signup'] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => { setTab(t); setError(null); }}
-              className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${
-                tab === t ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70'
-              }`}
-            >
-              {t === 'signin' ? 'Sign in' : 'Create account'}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          options={[
+            { value: 'signin', label: 'Sign in' },
+            { value: 'signup', label: 'Create account' },
+          ]}
+          value={tab}
+          onChange={(v) => { setTab(v); setError(null); }}
+        />
 
-        <form onSubmit={submit} className="space-y-3">
+        <form onSubmit={submit} className="space-y-3 mt-6">
           <div className="relative">
             <Mail size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-white/25 pointer-events-none" />
             <input
@@ -112,20 +108,10 @@ export default function LoginPage({ user }: LoginPageProps) {
             </div>
           )}
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-3 rounded-xl transition-all hover:scale-[1.01] active:scale-[0.99]"
-          >
-            {loading ? (
-              <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-            ) : (
-              <>
-                <span>{tab === 'signin' ? 'Sign in' : 'Create account'}</span>
-                <ArrowRight size={15} />
-              </>
-            )}
-          </button>
+          <LoadingButton type="submit" loading={loading}>
+            <span>{tab === 'signin' ? 'Sign in' : 'Create account'}</span>
+            <ArrowRight size={15} />
+          </LoadingButton>
         </form>
 
         <p className="mt-6 text-center text-xs text-white/25">
@@ -134,6 +120,6 @@ export default function LoginPage({ user }: LoginPageProps) {
           This account is for your DJ dashboard and audience voting.
         </p>
       </div>
-    </div>
+    </PageShell>
   );
 }

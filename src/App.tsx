@@ -5,14 +5,15 @@ import { supabase } from './lib/supabase';
 import PlayerPage from './pages/PlayerPage';
 import VotePage from './pages/VotePage';
 import LoginPage from './pages/LoginPage';
-import HelpPage from './pages/HelpPage';
+import PageShell from './components/ui/PageShell';
+import Spinner from './components/ui/Spinner';
 
 function RequireAuth({ user, children }: { user: User | null | undefined; children: React.ReactNode }) {
   if (user === undefined) {
     return (
-      <div className="min-h-screen bg-[#080a0e] flex items-center justify-center">
-        <div className="w-5 h-5 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" />
-      </div>
+      <PageShell className="flex items-center justify-center">
+        <Spinner />
+      </PageShell>
     );
   }
   if (!user) return <Navigate to="/login" replace />;
@@ -48,7 +49,6 @@ export default function App() {
             </RequireAuth>
           }
         />
-        <Route path="/help" element={<HelpPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

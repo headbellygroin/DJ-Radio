@@ -39,3 +39,22 @@ export interface VoteTally {
   genre: string;
   count: number;
 }
+
+/** Row shape inserted into the `votes` table. */
+export interface VoteRow {
+  station_id:       string;
+  vote_type:        'genre' | 'song';
+  value:            string;
+  voter_token:      string;
+  hour_key:         string;
+  duration_minutes?: number;
+}
+
+/** Row shape selected from `hourly_vote_result`. */
+export interface HourlyVoteResult {
+  id?:         string;
+  station_id:  string;
+  hour_start:  string;
+  genre:       string | null;
+  created_at?: string;
+}
