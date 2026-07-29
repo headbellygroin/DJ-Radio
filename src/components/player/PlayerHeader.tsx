@@ -22,7 +22,7 @@ export default function PlayerHeader({
   const sourceLabel = playSource === 'master' ? 'Master' : playSource;
 
   return (
-    <header className="relative z-10 border-b border-white/5 px-6 py-4 flex items-center gap-3">
+    <header className="relative z-10 border-b border-white/5 px-6 py-2 flex items-center gap-3">
       <div className="flex items-center gap-2">
         <div className="w-8 h-8 rounded-full bg-red-600 flex items-center justify-center">
           <Radio size={15} />
